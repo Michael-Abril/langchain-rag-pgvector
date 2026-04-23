@@ -13,9 +13,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
-EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
+EMBED_MODEL = os.environ.get("EMBED_MODEL", "tinyllama")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "tinyllama")
-EMBED_DIM = int(os.environ.get("EMBED_DIM", "768"))
+EMBED_DIM = int(os.environ.get("EMBED_DIM", "2048"))
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
@@ -42,11 +42,11 @@ def init_db():
     db = get_db()
     cur = db.cursor()
     cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-    cur.execute(f"""
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS documents (
             id SERIAL PRIMARY KEY,
             chunk TEXT NOT NULL,
-            embedding vector({EMBED_DIM}),
+            embedding vector(2048),
             source TEXT
         )
     """)
@@ -58,8 +58,7 @@ def init_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — pulling models and initializing DB")
-    pull_model(EMBED_MODEL)
+    logger.info("Starting up — pulling tinyllama and initializing DB")
     pull_model(CHAT_MODEL)
     init_db()
     logger.info("Startup complete")
