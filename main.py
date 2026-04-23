@@ -24,18 +24,44 @@ def get_db():
     return psycopg2.connect(DATABASE_URL)
 
 
-def pull_model(model: str):
+def wait_for_ollama(max_wait: int = 120) -> bool:
+    """Wait until Ollama is reachable."""
+    import time
+    for i in range(max_wait // 5):
+        try:
+            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                logger.info("Ollama is reachable")
+                return True
+        except Exception:
+            pass
+        logger.info(f"Waiting for Ollama... ({i*5}s)")
+        time.sleep(5)
+    logger.error("Ollama not reachable after waiting")
+    return False
+
+
+def pull_model(model: str) -> bool:
     """Pull an Ollama model if not already available."""
     try:
+        # Check if model is already available
+        resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=10)
+        models = [m["name"] for m in resp.json().get("models", [])]
+        if any(model in m for m in models):
+            logger.info(f"Model {model} already available")
+            return True
+        logger.info(f"Pulling model {model}...")
         resp = requests.post(
             f"{OLLAMA_URL}/api/pull",
             json={"name": model, "stream": False},
-            timeout=300,
+            timeout=600,
         )
         resp.raise_for_status()
-        logger.info(f"Model {model} ready")
+        logger.info(f"Model {model} pulled successfully")
+        return True
     except Exception as e:
         logger.error(f"Failed to pull model {model}: {e}")
+        return False
 
 
 def init_db():
@@ -58,8 +84,12 @@ def init_db():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — pulling tinyllama and initializing DB")
-    pull_model(CHAT_MODEL)
+    logger.info("Starting up — waiting for Ollama and initializing DB")
+    ollama_up = wait_for_ollama(max_wait=120)
+    if ollama_up:
+        pull_model(CHAT_MODEL)
+    else:
+        logger.warning("Ollama not available at startup; models will be pulled on first request")
     init_db()
     logger.info("Startup complete")
     yield
@@ -80,7 +110,20 @@ class QueryRequest(BaseModel):
     top_k: int = 3
 
 
+def ensure_model_ready(model: str):
+    """Pull model if not available (lazy, called before inference)."""
+    try:
+        resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        models = [m["name"] for m in resp.json().get("models", [])]
+        if not any(model in m for m in models):
+            logger.info(f"Lazy pull: {model}")
+            pull_model(model)
+    except Exception as e:
+        logger.warning(f"Could not check/pull {model}: {e}")
+
+
 def embed_text(text: str) -> list[float]:
+    ensure_model_ready(EMBED_MODEL)
     resp = requests.post(
         f"{OLLAMA_URL}/api/embeddings",
         json={"model": EMBED_MODEL, "prompt": text},
@@ -130,6 +173,15 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/models")
+def models():
+    try:
+        resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        return {"ollama_url": OLLAMA_URL, "models": resp.json()}
+    except Exception as e:
+        return {"ollama_url": OLLAMA_URL, "error": str(e)}
 
 
 @app.get("/ready")
